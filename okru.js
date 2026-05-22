@@ -3,25 +3,19 @@ const axios = require('axios');
 /**
  * OK.ru Film Kaynağı
  * 
- * Yaklaşım:
- * - OK.ru'nun public /dk/search endpointini kullanır (session gerektirmez)
- * - Embed link formatı: https://ok.ru/videoembed/{videoId}
- * - 60 dakikadan uzun videolar film olarak kabul edilir
+ * Arama: https://ok.ru/video/search?q=...  (HTML parse)
+ * Metadata: https://ok.ru/dk?cmd=videoPlayerMetadata&mid={id}  (JSON API)
+ * Embed link: https://ok.ru/videoembed/{id}
  */
 
 class OKruSource {
     constructor() {
         this.baseUrl = 'https://ok.ru';
         this.processedIds = new Set();
-
-        // Tarayıcı gibi görünen header'lar (bot engeline karşı)
         this.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Referer': 'https://ok.ru/'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         };
     }
 
@@ -29,96 +23,82 @@ class OKruSource {
     async searchVideoIds(keyword, maxResults = 20) {
         const ids = [];
         try {
-            const searchUrl = `${this.baseUrl}/dk?st.cmd=anonymMain&st.searchQuery=${encodeURIComponent(keyword)}&st.ft=video`;
-            const response = await axios.get(searchUrl, {
+            const url = `${this.baseUrl}/video/search?q=${encodeURIComponent(keyword)}`;
+            const response = await axios.get(url, {
                 headers: this.headers,
                 timeout: 20000
             });
-
             const html = response.data;
 
-            // Video ID'leri HTML içinden çek
-            // Format: /video/1234567890 veya videoembed/1234567890
+            // ok.ru arama sayfasındaki video ID pattern'leri
             const patterns = [
-                /\/video\/(\d{10,})/g,
-                /videoembed\/(\d{10,})/g,
-                /"videoId":"(\d{10,})"/g,
-                /data-id="(\d{10,})"/g
+                /\/video\/(\d{8,})/g,
+                /"videoId"\s*:\s*"(\d{8,})"/g,
+                /data-mid="(\d{8,})"/g,
+                /data-id="(\d{8,})"/g,
+                /"mid"\s*:\s*"(\d{8,})"/g,
             ];
 
             for (const pattern of patterns) {
-                const matches = html.matchAll(pattern);
-                for (const match of matches) {
+                let match;
+                pattern.lastIndex = 0;
+                while ((match = pattern.exec(html)) !== null) {
                     const id = match[1];
-                    if (!this.processedIds.has(id) && ids.length < maxResults) {
+                    if (!this.processedIds.has(id) && !ids.includes(id)) {
                         ids.push(id);
+                        if (ids.length >= maxResults) break;
                     }
                 }
+                if (ids.length >= maxResults) break;
             }
+
+            console.log(`     HTML boyutu: ${Math.round(html.length/1024)}KB, bulunan ID: ${ids.length}`);
         } catch (error) {
             console.error(`  ⚠️  Arama hatası (${keyword}): ${error.message}`);
         }
-        return [...new Set(ids)]; // tekrarları temizle
+        return ids;
     }
 
-    // Video sayfasından metadata çek
+    // videoPlayerMetadata API ile video bilgilerini al
     async getVideoMeta(videoId) {
         if (this.processedIds.has(videoId)) return null;
 
         try {
-            const videoUrl = `${this.baseUrl}/video/${videoId}`;
-            const response = await axios.get(videoUrl, {
-                headers: this.headers,
+            const url = `${this.baseUrl}/dk?cmd=videoPlayerMetadata&mid=${videoId}`;
+            const response = await axios.post(url, null, {
+                headers: {
+                    ...this.headers,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Referer': `https://ok.ru/video/${videoId}`,
+                },
                 timeout: 15000
             });
 
-            const html = response.data;
+            const data = response.data;
+            if (!data || !data.movie) return null;
 
-            // Başlık
-            let title = null;
-            const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
-                || html.match(/"name"\s*:\s*"([^"]{5,80})"/);
-            if (titleMatch) {
-                title = titleMatch[1]
-                    .replace(/ - OK\.ru.*$/i, '')
-                    .replace(/&quot;/g, '"')
-                    .replace(/&#39;/g, "'")
-                    .replace(/&amp;/g, '&')
-                    .trim();
-            }
-            if (!title || title.length < 3) return null;
+            const movie = data.movie;
+            const title = movie.title;
+            if (!title || title.length < 2) return null;
 
-            // Süre (saniye) - film filtresi için
-            let duration = 0;
-            const durMatch = html.match(/"duration"\s*:\s*(\d+)/)
-                || html.match(/content="PT(\d+)M(\d+)S"/);
-            if (durMatch) {
-                if (durMatch[2]) {
-                    // PT format (ISO 8601)
-                    duration = parseInt(durMatch[1]) * 60 + parseInt(durMatch[2]);
-                } else {
-                    duration = parseInt(durMatch[1]);
-                }
-            }
+            // Süre saniye cinsinden
+            const duration = parseInt(movie.duration || '0');
 
-            // 60 dakikadan kısa ise film değil, atla
+            // 60 dakikadan kısa ise film değil
             if (duration > 0 && duration < 3600) return null;
-
-            // Thumbnail
-            let poster = '';
-            const posterMatch = html.match(/og:image[^>]*content="([^"]+)"/)
-                || html.match(/"thumbnailUrl"\s*:\s*"([^"]+)"/);
-            if (posterMatch) poster = posterMatch[1];
-
-            // Yıl
-            let year = new Date().getFullYear();
-            const yearMatch = html.match(/(\b20[0-9]{2}\b)/);
-            if (yearMatch) year = parseInt(yearMatch[1]);
 
             this.processedIds.add(videoId);
 
+            // Poster URL
+            const poster = movie.poster || '';
+
+            // Yıl: başlıktan veya o anki yıldan tahmin
+            let year = new Date().getFullYear();
+            const yearMatch = title.match(/\b(19[5-9]\d|20[0-2]\d)\b/);
+            if (yearMatch) year = parseInt(yearMatch[1]);
+
             return {
-                title,
+                title: title.replace(/\\"/g, '"').replace(/&quot;/g, '"').trim(),
                 url: `https://ok.ru/videoembed/${videoId}`,
                 duration,
                 poster,
@@ -129,12 +109,10 @@ class OKruSource {
                 source: 'ok.ru'
             };
         } catch (error) {
-            // 404, private video vb. — sessizce atla
-            return null;
+            return null; // private/silinen video — sessizce atla
         }
     }
 
-    // Ana fonksiyon - popüler filmleri çek
     async getPopularMovies(limit = 100) {
         console.log('📺 OK.ru taranıyor...');
 
@@ -157,11 +135,8 @@ class OKruSource {
             if (movies.length >= limit) break;
 
             console.log(`  🔍 "${keyword}" aranıyor...`);
-            const remaining = limit - movies.length;
-            const perSearch = Math.min(20, remaining + 5); // biraz fazla çek, filtre sonrası düşecek
-
+            const perSearch = Math.min(25, limit - movies.length + 5);
             const ids = await this.searchVideoIds(keyword, perSearch);
-            console.log(`     ${ids.length} video ID bulundu`);
 
             for (const id of ids) {
                 if (movies.length >= limit) break;
@@ -169,16 +144,13 @@ class OKruSource {
                 const meta = await this.getVideoMeta(id);
                 if (meta) {
                     movies.push(meta);
-                    const durMin = meta.duration ? `${Math.floor(meta.duration / 60)} dk` : '? dk';
-                    console.log(`     ✓ ${meta.title} (${meta.year}, ${durMin})`);
+                    const dur = meta.duration ? `${Math.floor(meta.duration / 60)} dk` : '? dk';
+                    console.log(`     ✓ ${meta.title} (${meta.year}, ${dur})`);
                 }
-
-                // Rate limiting — ban yememek için
-                await new Promise(r => setTimeout(r, 800));
+                await new Promise(r => setTimeout(r, 600));
             }
 
-            // Keyword'ler arası bekleme
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 1200));
         }
 
         // Tekrar eden başlıkları temizle
