@@ -1,10 +1,5 @@
 const puppeteer = require('puppeteer');
 
-/**
- * OK.ru Film Kaynağı - Puppeteer versiyonu
- * /video sayfasından ID çeker, metadata API ile film olanları filtreler
- */
-
 class OKruSource {
     constructor() {
         this.baseUrl = 'https://ok.ru';
@@ -18,66 +13,47 @@ class OKruSource {
         });
     }
 
-    // Sayfadan video ID'lerini çek
     extractIds(html) {
         const ids = new Set();
-        const patterns = [
-            /\/video\/(\d{8,})/g,
-            /"mid"\s*:\s*"(\d{8,})"/g,
-            /data-mid="(\d{8,})"/g,
-        ];
-        for (const p of patterns) {
-            let m;
-            p.lastIndex = 0;
-            while ((m = p.exec(html)) !== null) {
-                if (!this.processedIds.has(m[1])) ids.add(m[1]);
-            }
+        const matches = html.matchAll(/\/video\/(\d{8,})/g);
+        for (const m of matches) {
+            if (!this.processedIds.has(m[1])) ids.add(m[1]);
         }
         return [...ids];
     }
 
-    // /video sayfasını scroll ederek ID topla
-    async collectIds(page, targetCount = 200) {
-        const allIds = new Set();
+    // Sayfayı scroll ederek ID topla
+    async collectIds(page, scrollCount = 15) {
+        await page.goto('https://ok.ru/video?typeParam=MOVIE&duration=LONG', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await new Promise(r => setTimeout(r, 3000));
 
-        // Ana video sayfası
-        const pages = [
-            'https://ok.ru/video',
-            'https://ok.ru/video?typeParam=MOVIE',
-            'https://ok.ru/video?typeParam=MOVIE&duration=LONG',
-        ];
-
-        for (const url of pages) {
-            if (allIds.size >= targetCount) break;
-            console.log(`  📄 ${url}`);
-
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await new Promise(r => setTimeout(r, 3000));
-
-            // Aşağı kaydır - daha fazla içerik yüklensin
-            for (let i = 0; i < 5; i++) {
-                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                await new Promise(r => setTimeout(r, 1500));
-            }
-
-            const html = await page.content();
-            const ids = this.extractIds(html);
-            ids.forEach(id => allIds.add(id));
-            console.log(`     ${ids.length} ID bulundu (toplam: ${allIds.size})`);
+        for (let i = 0; i < scrollCount; i++) {
+            await page.evaluate(() => window.scrollBy(0, 1000));
+            await new Promise(r => setTimeout(r, 2000));
         }
 
-        return [...allIds];
+        const html = await page.content();
+        const ids = this.extractIds(html);
+        console.log(`  📋 ${ids.length} video ID bulundu`);
+        return ids;
     }
 
-    // videoPlayerMetadata API ile film bilgilerini al
-    async getVideoMeta(videoId) {
+    // Metadata API'yi page.evaluate içinde çağır (cookie/session için)
+    async getVideoMeta(page, videoId) {
+        if (this.processedIds.has(videoId)) return null;
+
         try {
-            const url = `${this.baseUrl}/dk?cmd=videoPlayerMetadata&mid=${videoId}`;
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-            });
-            const data = await res.json();
+            const data = await page.evaluate(async (id) => {
+                const res = await fetch(`https://ok.ru/dk?cmd=videoPlayerMetadata&mid=${id}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                });
+                return await res.json();
+            }, videoId);
+
             if (!data?.movie) return null;
 
             const movie = data.movie;
@@ -85,8 +61,7 @@ class OKruSource {
             if (!title || title.length < 2) return null;
 
             const duration = parseInt(movie.duration || '0');
-            // 60 dakikadan kısa = film değil, atla
-            if (duration > 0 && duration < 3600) return null;
+            if (duration > 0 && duration < 3600) return null; // 60 dk altı = film değil
 
             this.processedIds.add(videoId);
 
@@ -111,7 +86,7 @@ class OKruSource {
     }
 
     async getPopularMovies(limit = 100) {
-        console.log('📺 OK.ru taranıyor (Puppeteer)...');
+        console.log('📺 OK.ru taranıyor...');
 
         const browser = await this.getBrowser();
         const movies = [];
@@ -121,24 +96,25 @@ class OKruSource {
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
             await page.setExtraHTTPHeaders({ 'Accept-Language': 'tr-TR,tr;q=0.9' });
 
-            // ID'leri topla
-            const ids = await this.collectIds(page, limit * 3); // film filtresi düşüreceği için fazla al
-            console.log(`\n  🎯 Toplam ${ids.length} video ID bulundu, metadata kontrol ediliyor...`);
+            // Scroll sayısını limit'e göre ayarla (her 3 scroll ~18 yeni ID)
+            const scrollCount = Math.ceil(limit / 6) + 5;
+            const ids = await this.collectIds(page, scrollCount);
 
-            await page.close();
+            console.log(`  🎯 ${ids.length} ID kontrol ediliyor...`);
 
-            // Her ID için metadata çek, film olanları al
             for (const id of ids) {
                 if (movies.length >= limit) break;
 
-                const meta = await this.getVideoMeta(id);
+                const meta = await this.getVideoMeta(page, id);
                 if (meta) {
                     movies.push(meta);
                     const dur = meta.duration ? `${Math.floor(meta.duration / 60)} dk` : '? dk';
                     console.log(`  ✓ ${meta.title} (${meta.year}, ${dur})`);
                 }
-                await new Promise(r => setTimeout(r, 400));
+                await new Promise(r => setTimeout(r, 300));
             }
+
+            await page.close();
         } finally {
             await browser.close();
         }
