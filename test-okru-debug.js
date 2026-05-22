@@ -1,34 +1,37 @@
-const axios = require('axios');
+const puppeteer = require('puppeteer');
 
 async function debug() {
-    console.log("🔍 OK.ru DEBUG\n");
+    console.log("🔍 Puppeteer DEBUG\n");
 
-    const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'tr-TR,tr;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    };
+    const browser = await puppeteer.launch({
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    });
+
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
     const urls = [
         'https://ok.ru/video/search?q=film',
         'https://ok.ru/video',
-        'https://ok.ru',
     ];
 
     for (const url of urls) {
+        console.log(`\n📡 ${url}`);
         try {
-            const r = await axios.get(url, { headers, timeout: 15000 });
-            console.log(`✅ ${url}`);
-            console.log(`   Status: ${r.status}`);
-            console.log(`   Boyut: ${Math.round(r.data.length / 1024)} KB`);
-            console.log(`   İlk 300 karakter:\n   ${r.data.substring(0, 300)}\n`);
+            const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            console.log(`   HTTP Status: ${response.status()}`);
+            await new Promise(r => setTimeout(r, 3000));
+            const html = await page.content();
+            console.log(`   HTML boyutu: ${Math.round(html.length / 1024)} KB`);
+            console.log(`   Title: ${await page.title()}`);
+            console.log(`   İlk 500 karakter:\n${html.substring(0, 500)}`);
         } catch (e) {
-            console.log(`❌ ${url}`);
-            console.log(`   Hata: ${e.message}`);
-            console.log(`   HTTP Status: ${e.response?.status || 'yok'}`);
-            console.log(`   Response: ${JSON.stringify(e.response?.data || '').substring(0, 200)}\n`);
+            console.log(`   ❌ HATA: ${e.message}`);
         }
     }
+
+    await browser.close();
 }
 
-debug();
+debug().catch(console.error);
