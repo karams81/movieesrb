@@ -1,7 +1,7 @@
 name: Film Arşivini Güncelle
 on:
   schedule:
-    - cron: '0 0 */2 * *'  # Her iki gecede bir 00:00 UTC
+    - cron: '0 0 */4 * *'  # Her iki gecede bir 00:00 UTC
   workflow_dispatch:
 jobs:
   scrape:
