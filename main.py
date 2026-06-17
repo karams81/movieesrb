@@ -1,114 +1,121 @@
 import time
 import uuid
 import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import FastAPI, Response
 import uvicorn
 
 app = FastAPI()
-session = requests.Session()
 
-_sign = None
-_sign_time = 0
-TIMEOUT = 15
+MAX_WORKERS = 15
+TIMEOUT = 20
 
-def get_signature():
-    global _sign, _sign_time
-    if _sign and time.time() - _sign_time < 60:
-        return _sign
+class VavooPro:
+    def __init__(self):
+        self.session = requests.Session()
+        self.sign = None
+        self.sign_time = 0
 
-    payload = {
-        "token": "", "reason": "boot", "locale": "de", "theme": "dark",
-        "metadata": {
-            "device": {"type": "desktop", "uniqueId": str(uuid.uuid4())},
-            "os": {"name": "win32", "version": "Windows 10", "abis": ["x64"], "host": "DESKTOP-" + str(uuid.uuid4())[:8]},
-            "app": {"platform": "electron"},
-            "version": {"package": "app.lokke.main", "binary": "1.0.19", "js": "1.0.19"}
-        },
-        "appFocusTime": 120
-    }
-    try:
-        r = session.post(
-            "https://www.lokke.app/api/app/ping",
-            json=payload,
-            headers={"accept": "application/json", "user-agent": "okhttp/4.11.0", "content-type": "application/json; charset=utf-8"},
-            timeout=TIMEOUT
-        )
-        _sign = r.json().get("addonSig")
-        _sign_time = time.time()
-    except:
-        _sign = None
-    return _sign
+    def get_signature(self):
+        if self.sign and time.time() - self.sign_time < 60:
+            return self.sign
 
-@app.get("/vavoo.m3u")
-def get_m3u():
-    sign = get_signature()
-    payload = {
-        "language": "en", "region": "UK", "catalogId": "iptv", "id": "iptv",
-        "adult": True, "search": "", "sort": "name", "filter": {"group": "Turkey"}, "cursor": 0
-    }
-    
-    all_items = []
-    for cursor in [0, 300, 600, 900]:
-        payload["cursor"] = cursor
+        payload = {
+            "token": "", "reason": "boot", "locale": "de", "theme": "dark",
+            "metadata": {
+                "device": {"type": "desktop", "uniqueId": str(uuid.uuid4())},
+                "os": {"name": "win32", "version": "Windows 10", "abis": ["x64"], "host": "DESKTOP-" + str(uuid.uuid4())[:8]},
+                "app": {"platform": "electron"},
+                "version": {"package": "app.lokke.main", "binary": "1.0.19", "js": "1.0.19"}
+            },
+            "appFocusTime": 120
+        }
         try:
-            r = session.post(
-                "https://vavoo.to/mediahubmx-catalog.json",
+            r = self.session.post(
+                "https://www.lokke.app/api/app/ping",
                 json=payload,
-                headers={"user-agent": "MediaHubMX/2", "accept": "application/json", "mediahubmx-signature": sign or ""},
+                headers={"accept": "application/json", "user-agent": "okhttp/4.11.0", "content-type": "application/json; charset=utf-8"},
                 timeout=TIMEOUT
             )
-            items = r.json().get("items", [])
-            if not items: break
-            all_items.extend(items)
+            self.sign = r.json().get("addonSig")
+            self.sign_time = time.time()
         except:
-            break
+            self.sign = None
+        return self.sign
 
-    m3u = ["#EXTM3U"]
+    def get_channels(self, group="Turkey"):
+        all_items = []
+        cursor = 0
+        while True:
+            sign = self.get_signature()
+            headers = {
+                "user-agent": "MediaHubMX/2", "accept": "application/json",
+                "content-type": "application/json", "mediahubmx-signature": sign or ""
+            }
+            payload = {
+                "language": "en", "region": "UK", "catalogId": "iptv", "id": "iptv",
+                "adult": True, "search": "", "sort": "name", "filter": {"group": group}, "cursor": cursor
+            }
+            try:
+                r = self.session.post("https://vavoo.to/mediahubmx-catalog.json", json=payload, headers=headers, timeout=TIMEOUT)
+                data = r.json()
+                items = data.get("items", [])
+                if not items: break
+                all_items.extend(items)
+                
+                next_cursor = data.get("cursor")
+                if next_cursor and next_cursor != cursor:
+                    cursor = next_cursor
+                else:
+                    cursor += len(items)
+                time.sleep(0.2)
+            except:
+                break
+        return all_items
+
+    def resolve_channel(self, ch):
+        if not ch.get("url"): return None
+        sign = self.get_signature()
+        try:
+            r = self.session.post(
+                "https://vavoo.to/mediahubmx-resolve.json",
+                json={"language": "en", "region": "UK", "url": ch["url"]},
+                headers={"user-agent": "MediaHubMX/2", "accept": "application/json", "content-type": "application/json", "mediahubmx-signature": sign or ""},
+                timeout=TIMEOUT
+            )
+            data = r.json()
+            if isinstance(data, list) and data:
+                return (ch["name"], data[0].get("url"))
+        except:
+            return None
+        return None
+
+vavoo_bot = VavooPro()
+
+@app.get("/vavoo.m3u")
+def generate_live_m3u():
+    # Senin orijinal build_m3u mantığının Render için uyarlanmış hali
+    channels = vavoo_bot.get_channels("Turkey")
+    if not channels:
+        return Response(content="#EXTM3U\n#INFO: Kanallar cekilemedi", media_type="application/x-mpegurl")
+
     seen = set()
-    for ch in all_items:
-        name = ch.get("name")
-        url = ch.get("url")
-        if not url or url in seen: continue
+    m3u = ["#EXTM3U"]
+
+    # ThreadPool ile hızlıca linkleri arka arkaya çözüyoruz
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        results = executor.map(vavoo_bot.resolve_channel, channels)
+
+    for res in results:
+        if not res: continue
+        name, url = res
+        if url in seen or not url or len(url) < 10: continue
         seen.add(url)
-        
+
         m3u.append(f'#EXTINF:-1 tvg-name="{name}",{name}')
-        m3u.append(f'https://vwapis.onrender.com/play?url={url}')
+        m3u.append(url)
 
     return Response(content="\n".join(m3u), media_type="application/x-mpegurl")
-
-@app.get("/play")
-def play(url: str):
-    sign = get_signature()
-    try:
-        # 1. Aşama: O anlık geçerli olan gizli video linkini çözüyoruz
-        r = session.post(
-            "https://vavoo.to/mediahubmx-resolve.json",
-            json={"language": "en", "region": "UK", "url": url},
-            headers={"user-agent": "MediaHubMX/2", "accept": "application/json", "mediahubmx-signature": sign or ""},
-            timeout=TIMEOUT
-        )
-        data = r.json()
-        if isinstance(data, list) and data:
-            stream_url = data[0].get("url")
-            
-            # 2. Aşama: Vavoo'nun doğrulama için zorunlu tuttuğu başlıkları (Header) ekliyoruz
-            video_headers = {
-                "User-Agent": "MediaHubMX/2",
-                "Accept": "*/*",
-                "Connection": "keep-alive"
-            }
-            
-            # 3. Aşama: Videoyu Render sunucusu üzerinden indirip eşzamanlı olarak oynatıcıya pompalıyoruz (Proxy)
-            video_response = requests.get(stream_url, headers=video_headers, stream=True, timeout=TIMEOUT)
-            
-            return StreamingResponse(
-                video_response.iter_content(chunk_size=1024 * 64),
-                media_type=video_response.headers.get("content-type", "video/mp2t")
-            )
-    except Exception as e:
-        print(f"Proxy Baglanti Hatasi: {e}")
-    raise HTTPException(status_code=404, detail="Kanal yuklenemedi")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=10000)
