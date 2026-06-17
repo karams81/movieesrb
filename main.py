@@ -72,9 +72,8 @@ def get_m3u():
         if not url or url in seen: continue
         seen.add(url)
         
-        # Render linkimizi buraya otomatik bağlayacağız
         m3u.append(f'#EXTINF:-1 tvg-name="{name}",{name}')
-        m3u.append(f'https://vavoo-api.onrender.com/play?url={url}')
+        m3u.append(f'https://vwapis.onrender.com/play?url={url}')
 
     return Response(content="\n".join(m3u), media_type="application/x-mpegurl")
 
