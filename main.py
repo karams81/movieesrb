@@ -2,7 +2,7 @@ import time
 import uuid
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import Response, StreamingResponse
 import uvicorn
 
 app = FastAPI()
@@ -81,6 +81,7 @@ def get_m3u():
 def play(url: str):
     sign = get_signature()
     try:
+        # 1. Aşama: O anlık geçerli olan gizli video linkini çözüyoruz
         r = session.post(
             "https://vavoo.to/mediahubmx-resolve.json",
             json={"language": "en", "region": "UK", "url": url},
@@ -90,9 +91,23 @@ def play(url: str):
         data = r.json()
         if isinstance(data, list) and data:
             stream_url = data[0].get("url")
-            return RedirectResponse(url=stream_url)
-    except:
-        pass
+            
+            # 2. Aşama: Vavoo'nun doğrulama için zorunlu tuttuğu başlıkları (Header) ekliyoruz
+            video_headers = {
+                "User-Agent": "MediaHubMX/2",
+                "Accept": "*/*",
+                "Connection": "keep-alive"
+            }
+            
+            # 3. Aşama: Videoyu Render sunucusu üzerinden indirip eşzamanlı olarak oynatıcıya pompalıyoruz (Proxy)
+            video_response = requests.get(stream_url, headers=video_headers, stream=True, timeout=TIMEOUT)
+            
+            return StreamingResponse(
+                video_response.iter_content(chunk_size=1024 * 64),
+                media_type=video_response.headers.get("content-type", "video/mp2t")
+            )
+    except Exception as e:
+        print(f"Proxy Baglanti Hatasi: {e}")
     raise HTTPException(status_code=404, detail="Kanal yuklenemedi")
 
 if __name__ == "__main__":
