@@ -1,44 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-vavoo_resolver.py - TAM VERSİYON + ÜLKE SEÇİMİ + OTOMATİK KÜTÜPHANE KONTROLÜ
+vavoo_resolver.py - TAM VERSİYON
+Tek kanal + TÜM ÜLKELER M3U
 """
 
 import sys
-import subprocess  # pip install için
-
-# === OTOMATİK KÜTÜPHANE KONTROLÜ ===
-def install_package(package):
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-        print(f"[INFO] {package} başarıyla yüklendi!")
-    except Exception as e:
-        print(f"[HATA] {package} yüklenemedi: {e}. Lütfen elle yükleyin: pip install {package}", file=sys.stderr)
-        sys.exit(1)
-
-try:
-    import requests
-except ImportError:
-    print("[INFO] requests kütüphanesi yüklü değil, otomatik yüklüyorum...")
-    install_package("requests")
-    import requests
-
-try:
-    import json
-    import os
-    import re
-except ImportError:
-    print("[HATA] Standart Python modülleri eksik! Python kurulumunuzu kontrol edin.", file=sys.stderr)
-    sys.exit(1)
+import requests
+import json
+import os
+import re
 
 # config/domains.json
-try:
-    with open(os.path.join(os.path.dirname(__file__), 'config/domains.json'), encoding='utf-8') as f:
-        DOMAINS = json.load(f)
-    VAVOO_DOMAIN = DOMAINS.get("vavoo", "vavoo.to")
-except Exception as e:
-    print(f"[HATA] config/domains.json bulunamadı: {e}", file=sys.stderr)
-    sys.exit(1)
+with open(os.path.join(os.path.dirname(__file__), 'config/domains.json'), encoding='utf-8') as f:
+    DOMAINS = json.load(f)
+VAVOO_DOMAIN = DOMAINS.get("vavoo", "vavoo.to")
 
 def getAuthSignature():
     headers = {
@@ -163,8 +139,8 @@ def normalize_vavoo_name(name):
 
 # ====================== ANA KISIM ======================
 if __name__ == "__main__":
-    if len(sys.argv) < 2 and "--full-m3u" not in sys.argv and "--country-m3u" not in sys.argv:
-        print("Kullanım: python vavoo_resolver.py <kanal_adi> [--vavoo-iptv] [--full-m3u] [--country-m3u <ulke>]", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print("Kullanım: python vavoo_resolver.py <kanal_adi> [--vavoo-iptv] [--full-m3u]", file=sys.stderr)
         sys.exit(1)
 
     # === TÜM ÜLKELER M3U ===
@@ -172,39 +148,19 @@ if __name__ == "__main__":
         print("[INFO] Tüm ülkelerden kanallar çekiliyor... (30-60 saniye sürebilir)")
         channels = get_channels()
         print(f"[INFO] {len(channels)} kanal bulundu. M3U oluşturuluyor...")
+
         with open("vavoo_full.m3u", "w", encoding="utf-8") as f:
             f.write("#EXTM3U\n")
             for ch in channels:
                 name = ch.get("name", "Bilinmeyen").strip()
                 url = ch.get("url")
-                if not url: continue
+                if not url:
+                    continue
                 real_link = resolve_to_vavoo_iptv(url, ch)
                 group = ch.get("group", "General")
                 f.write(f'#EXTINF:-1 group-title="{group}",{name}\n')
                 f.write(f"{real_link}\n")
         print(f"✅ vavoo_full.m3u başarıyla oluşturuldu! ({len(channels)} kanal)")
-        sys.exit(0)
-
-    # === BELİRLİ ÜLKE M3U ===
-    country_index = sys.argv.index("--country-m3u") if "--country-m3u" in sys.argv else -1
-    if country_index != -1:
-        country = sys.argv[country_index + 1]
-        print(f"[INFO] {country} kanalları çekiliyor...")
-        channels = get_channels(group=country)
-        if not channels:
-            print(f"[HATA] {country} grubu bulunamadı veya boş!")
-            sys.exit(1)
-        print(f"[INFO] {len(channels)} kanal bulundu. M3U oluşturuluyor...")
-        with open(f"vavoo_{country}.m3u", "w", encoding="utf-8") as f:
-            f.write("#EXTM3U\n")
-            for ch in channels:
-                name = ch.get("name", "Bilinmeyen").strip()
-                url = ch.get("url")
-                if not url: continue
-                real_link = resolve_to_vavoo_iptv(url, ch)
-                f.write(f'#EXTINF:-1 group-title="{country}",{name}\n')
-                f.write(f"{real_link}\n")
-        print(f"✅ vavoo_{country}.m3u başarıyla oluşturuldu! ({len(channels)} kanal)")
         sys.exit(0)
 
     # === TEK KANAL MODU ===
@@ -256,4 +212,5 @@ if __name__ == "__main__":
         print(url)
         sys.exit(0)
 
+    resolved = None  # tek kanal resolve istersen buraya ekleyebilirsin
     print(url)
