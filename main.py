@@ -1,214 +1,137 @@
 import requests
-import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor
+import re
+import sys
+import urllib3
+import json
+from bs4 import BeautifulSoup
 
-MAX_WORKERS = 10
-TIMEOUT = 20
+# SSL uyarılarını kapat
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-class VavooPro:
-    def __init__(self):
-        self.session = requests.Session()
-        self.sign = None
-        self.sign_time = 0
+# Ayarlar
+REDIRECT_SOURCE = "https://raw.githubusercontent.com/mehmetey03/goal/refs/heads/main/domain.txt"
+# Yeni eklenen base_url kaynağı
+BASE_URL_SOURCE = "https://patronsports2.cfd/domain.php"
 
-    def log(self, msg):
-        print(f"[{time.strftime('%H:%M:%S')}] {msg}")
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+}
 
-    # ---------------- SIGNATURE ----------------
-    def get_signature(self):
-        if self.sign and time.time() - self.sign_time < 60:
-            return self.sign
+def get_active_domain():
+    """GitHub üzerindeki domain.txt dosyasından güncel adresi çeker."""
+    try:
+        print(f"🔍 Aktif domain {REDIRECT_SOURCE} adresinden alınıyor...")
+        r = requests.get(REDIRECT_SOURCE, timeout=10)
+        domain = r.text.strip().rstrip('/')
+        if domain.startswith("http"):
+            print(f"✅ Aktif domain bulundu: {domain}")
+            return domain
+        else:
+            match = re.search(r'(https?://[^\s"<]+)', r.text)
+            if match:
+                return match.group(1).rstrip('/')
+    except Exception as e:
+        print(f"❌ Domain çekilirken hata: {e}")
+    return None
 
-        payload = {
-            "token": "",
-            "reason": "boot",
-            "locale": "de",
-            "theme": "dark",
-            "metadata": {
-                "device": {
-                    "type": "desktop",
-                    "uniqueId": str(uuid.uuid4())
-                },
-                "os": {
-                    "name": "win32",
-                    "version": "Windows 10",
-                    "abis": ["x64"],
-                    "host": "DESKTOP-" + str(uuid.uuid4())[:8]
-                },
-                "app": {"platform": "electron"},
-                "version": {
-                    "package": "app.lokke.main",
-                    "binary": "1.0.19",
-                    "js": "1.0.19"
-                }
-            },
-            "appFocusTime": 120
-        }
+def get_dynamic_base_url():
+    """Belirtilen PHP adresinden güncel baseurl değerini çeker."""
+    try:
+        print(f"📡 Base URL {BASE_URL_SOURCE} adresinden alınıyor...")
+        r = requests.get(BASE_URL_SOURCE, headers=HEADERS, timeout=10, verify=False)
+        # JSON verisini parse et: {"baseurl":"https:\/\/..."}
+        data = r.json()
+        base_url = data.get("baseurl", "").replace("\\/", "/") # Ters slaşları düzelt
+        if base_url:
+            print(f"✅ Dinamik Base URL bulundu: {base_url}")
+            return base_url
+    except Exception as e:
+        print(f"⚠️ Dinamik base_url alınamadı: {e}")
+    return "https://hz8.d72577a9dd0ec62.cfd/" # Hata olursa eski fallback
 
-        try:
-            r = self.session.post(
-                "https://www.lokke.app/api/app/ping",
-                json=payload,
-                headers={
-                    "accept": "application/json",
-                    "user-agent": "okhttp/4.11.0",
-                    "content-type": "application/json; charset=utf-8"
-                },
-                timeout=TIMEOUT
-            )
+def main():
+    active_domain = get_active_domain()
+    if not active_domain:
+        sys.exit("❌ Başlangıç domaini bulunamadı. GitHub linkini kontrol edin.")
 
-            data = r.json()
-            self.sign = data.get("addonSig")
-            self.sign_time = time.time()
+    # Base URL'yi artık PHP dosyasından alıyoruz
+    base_url = get_dynamic_base_url()
 
-        except Exception as e:
-            self.log(f"Signature hata: {e}")
-            self.sign = None
+    # GÜNCEL KANAL LİSTESİ
+    fixed_channels = {
+        "zirve": "beIN Sports 1 A",
+        "taraftarium": "beIN Sports 1 B",
+        "patron": "beIN Sports 1 C",
+        "b2": "beIN Sports 2",
+        "b3": "beIN Sports 3",
+        "b4": "beIN Sports 4",
+        "b5": "beIN Sports 5",
+        "bm1": "beIN Sports 1 Max",
+        "bm2": "beIN Sports 2 Max",
+        "ss1": "S Sports 1",
+        "ss2": "S Sports 2",
+        "smarts": "Smart Sports",
+        "sms2": "Smart Sports 2",
+        "t1": "Tivibu Sports 1",
+        "t2": "Tivibu Sports 2",
+        "t3": "Tivibu Sports 3",
+        "t4": "Tivibu Sports 4",
+        "as": "A Spor",
+        "trtspor": "TRT Spor",
+        "trtspor2": "TRT Spor Yıldız",
+        "trt1": "TRT 1",
+        "atv": "ATV",
+        "tv85": "TV8.5",
+        "nbatv": "NBA TV",
+        "eu1": "Euro Sport 1",
+        "eu2": "Euro Sport 2",
+        "ex1": "Tâbii 1",
+        "ex2": "Tâbii 2",
+        "ex3": "Tâbii 3",
+        "ex4": "Tâbii 4",
+        "ex5": "Tâbii 5",
+        "ex6": "Tâbii 6",
+        "ex7": "Tâbii 7",
+        "ex8": "Tâbii 8"
+    }
 
-        return self.sign
+    try:
+        print("📡 Canlı maçlar taranıyor...")
+        resp = requests.get(active_domain, headers=HEADERS, timeout=15, verify=False)
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-    # ---------------- CHANNELS (Döngü Eklendi) ----------------
-    def get_channels(self, group="Turkey"):
-        all_items = []
-        cursor = 0
+        m3u_content = ["#EXTM3U"]
         
-        while True:
-            sign = self.get_signature()
-            headers = {
-                "user-agent": "MediaHubMX/2",
-                "accept": "application/json",
-                "content-type": "application/json",
-                "mediahubmx-signature": sign or ""
-            }
+        # 1. Canlı Maçlar Bölümü
+        matches_tab = soup.find(id="matches-tab")
+        if matches_tab:
+            for a in matches_tab.find_all("a", href=re.compile(r'id=')):
+                cid_match = re.search(r'id=([^&]+)', a["href"])
+                name = a.find(class_="channel-name")
+                status = a.find(class_="channel-status")
+                if cid_match and name:
+                    cid = cid_match.group(1)
+                    title = f"{status.get_text(strip=True) if status else 'CANLI'} | {name.get_text(strip=True)}"
+                    m3u_content.append(f'#EXTINF:-1 group-title="Canlı Maçlar",{title}')
+                    m3u_content.append(f'#EXTVLCOPT:http-user-agent={HEADERS["User-Agent"]}')
+                    m3u_content.append(f'#EXTVLCOPT:http-referrer={active_domain}/')
+                    m3u_content.append(f'{base_url}{cid}/mono.m3u8')
 
-            payload = {
-                "language": "en",
-                "region": "UK",
-                "catalogId": "iptv",
-                "id": "iptv",
-                "adult": True,
-                "search": "",
-                "sort": "name",
-                "filter": {"group": group},
-                "cursor": cursor
-            }
+        # 2. Sabit Kanallar Bölümü
+        for cid, name in fixed_channels.items():
+            m3u_content.append(f'#EXTINF:-1 group-title="7/24 Kanallar",{name}')
+            m3u_content.append(f'#EXTVLCOPT:http-user-agent={HEADERS["User-Agent"]}')
+            m3u_content.append(f'#EXTVLCOPT:http-referrer={active_domain}/')
+            m3u_content.append(f'{base_url}{cid}/mono.m3u8')
 
-            try:
-                r = self.session.post(
-                    "https://vavoo.to/mediahubmx-catalog.json",
-                    json=payload,
-                    headers=headers,
-                    timeout=TIMEOUT
-                )
+        with open("karsilasmalar2.m3u", "w", encoding="utf-8") as f:
+            f.write("\n".join(m3u_content))
 
-                data = r.json()
-                items = data.get("items", [])
-                
-                if not items:
-                    # Eğer bu sayfada hiç item yoksa döngüden çık
-                    break
-                
-                all_items.extend(items)
-                self.log(f"Sayfa çekildi (Cursor: {cursor}). Şu ana kadar toplam {len(all_items)} kanal toplandı.")
-                
-                # Vavoo API genellikle bir sonraki sayfa için yeni bir cursor döner. 
-                # Eğer dönmezse otomatik olarak mevcut listenin uzunluğu kadar kaydırıyoruz.
-                next_cursor = data.get("cursor")
-                if next_cursor and next_cursor != cursor:
-                    cursor = next_cursor
-                else:
-                    cursor += len(items)
-                    
-                # API'yi yormamak ve ban yememek için küçük bir bekleme
-                time.sleep(0.5)
+        print(f"🏁 BAŞARILI → karsilasmalar2.m3u hazır. ({len(m3u_content)//4} kanal eklendi)")
 
-            except Exception as e:
-                self.log(f"Kanal listesi çekilirken hata (Cursor {cursor}): {e}")
-                break
-                
-        return all_items
+    except Exception as e:
+        print(f"❌ Hata: {e}")
 
-    # ---------------- RESOLVE ----------------
-    def resolve_channel(self, ch):
-        if not ch.get("url"):
-            return None
-
-        sign = self.get_signature()
-
-        try:
-            r = self.session.post(
-                "https://vavoo.to/mediahubmx-resolve.json",
-                json={
-                    "language": "en",
-                    "region": "UK",
-                    "url": ch["url"]
-                },
-                headers={
-                    "user-agent": "MediaHubMX/2",
-                    "accept": "application/json",
-                    "content-type": "application/json",
-                    "mediahubmx-signature": sign or ""
-                },
-                timeout=TIMEOUT
-            )
-
-            data = r.json()
-
-            if isinstance(data, list) and data:
-                return (ch["name"], data[0].get("url"))
-
-        except:
-            return None
-
-        return None
-
-    # ---------------- M3U ----------------
-    def build_m3u(self):
-        self.log("Kanallar çekiliyor...")
-
-        channels = self.get_channels("Turkey")
-
-        if not channels:
-            self.log("❌ Kanal yok!")
-            return
-
-        self.log(f"Toplam {len(channels)} ham kanal bulundu. Çözümleniyor (Resolve)...")
-
-        seen = set()
-        m3u = ["#EXTM3U"]
-
-        self.log("Resolve başlıyor...")
-
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            results = executor.map(self.resolve_channel, channels)
-
-        for res in results:
-            if not res:
-                continue
-
-            name, url = res
-
-            # ❗ duplicate temizleme
-            if url in seen:
-                continue
-
-            seen.add(url)
-
-            # ❗ boş link engel
-            if not url or len(url) < 10:
-                continue
-
-            m3u.append(f'#EXTINF:-1 tvg-name="{name}",{name}')
-            m3u.append(url)
-
-        with open("vavoo_clean.m3u", "w", encoding="utf-8") as f:
-            f.write("\n".join(m3u))
-
-        self.log(f"✅ Bitti! Temiz benzersiz kanal sayısı: {len(seen)}")
-
-
-# ---------------- RUN ----------------
 if __name__ == "__main__":
-    v = VavooPro()
-    v.build_m3u()
+    main()
